@@ -25,6 +25,11 @@ NOMBRES = {VALENCIA: "Valencia J. Sorolla", CHAMARTIN: "Madrid Chamartín"}
 # Último día en que se recogen datos (después solo se mantiene el informe).
 FIN_SEGUIMIENTO = "2026-11-22"
 
+# Tu viaje (Iryo): se comparan los trenes de Renfe que salen de Valencia a una hora parecida.
+MI_FECHA = "2026-11-21"
+MI_SALIDA = "13:57"
+MARGEN_FRANJA_MIN = 90
+
 TIPOS = {
     2: "AVE", 3: "Avant", 4: "Talgo", 10: "Euromed", 11: "Alvia",
     13: "Intercity", 25: "AVE TGV", 28: "AVLO",
@@ -167,6 +172,74 @@ def resumen(viajes):
     return total, cats, medio, maximo
 
 
+def minutos(hhmm):
+    try:
+        h, m = hhmm.split(":")[:2]
+        return int(h) * 60 + int(m)
+    except (AttributeError, ValueError):
+        return None
+
+
+def en_mi_franja(v):
+    salida = minutos(v.get("salida_prevista", ""))
+    return (v["sentido"].startswith(NOMBRES[VALENCIA]) and salida is not None
+            and abs(salida - minutos(MI_SALIDA)) <= MARGEN_FRANJA_MIN)
+
+
+def seccion_mi_viaje(registros, terminados, en_ruta):
+    mi_fecha = datetime.fromisoformat(MI_FECHA).date()
+    dias_semana = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
+    nombre_dia = dias_semana[mi_fecha.weekday()]
+    ini = minutos(MI_SALIDA) - MARGEN_FRANJA_MIN
+    fin = minutos(MI_SALIDA) + MARGEN_FRANJA_MIN
+    franja_txt = f"{ini // 60:02d}:{ini % 60:02d} y las {fin // 60:02d}:{fin % 60:02d}"
+
+    l = [f"## 🎯 Tu viaje: {nombre_dia} {mi_fecha.strftime('%d/%m')}, Iryo de las {MI_SALIDA} "
+         "Valencia → Madrid Chamartín", ""]
+    hoy = registros.get("ultima_actualizacion", "")[:10]
+    if hoy:
+        faltan = (mi_fecha - datetime.fromisoformat(hoy).date()).days
+        if faltan > 0:
+            l += [f"Faltan **{faltan} días**.", ""]
+    l += [f"Iryo usa las mismas vías, así que se miran los trenes de Renfe que salen de Valencia "
+          f"entre las {franja_txt}. Complétalo con la app de Iryo o la de Adif.", ""]
+
+    franja = [v for v in terminados if en_mi_franja(v)]
+    mismo_dia = [v for v in franja
+                 if datetime.fromisoformat(v["fecha"]).weekday() == mi_fecha.weekday()]
+    l.append("| Trenes de Renfe en tu franja | Trenes | Puntual (≤5 min) | Más de 15 min | "
+             "Más de 30 min | Retraso medio | Máximo |")
+    l.append("|---|---|---|---|---|---|---|")
+    for nombre, grupo in [("Todos los días", franja), (f"Solo {nombre_dia}s", mismo_dia)]:
+        total, cats, medio, maximo = resumen(grupo)
+        if total:
+            l.append(f"| {nombre} | {total} | {pct(cats[0], total)} | {pct(sum(cats[2:]), total)} | "
+                     f"{pct(sum(cats[3:]), total)} | {medio:.1f} min | {maximo} min |")
+        else:
+            l.append(f"| {nombre} | 0 | – | – | – | – | – |")
+    l.append("")
+
+    total, cats, _, _ = resumen(franja)
+    if total >= 5:
+        puntual = cats[0] / total
+        if puntual >= 0.85:
+            veredicto = "🟢 La línea va bien a esa hora: la gran mayoría de trenes llegan puntuales."
+        elif puntual >= 0.7:
+            veredicto = "🟡 Hay retrasos de vez en cuando a esa hora: deja algo de margen si tienes una cita."
+        else:
+            veredicto = "🔴 Hay retrasos frecuentes a esa hora: conviene dejar un buen margen a la llegada."
+        l += [veredicto, ""]
+    else:
+        l += ["Aún hay pocos datos en tu franja para sacar conclusiones.", ""]
+
+    ahora = [v for v in en_ruta if en_mi_franja(v)]
+    if ahora:
+        l.append("Ahora mismo en ruta en tu franja: " + ", ".join(
+            f"{v['tipo']} {v['tren']} ({v.get('retraso_final', 0)} min)" for v in ahora))
+        l.append("")
+    return l
+
+
 def informe(registros):
     viajes = list(registros.get("viajes", {}).values())
     terminados = [v for v in viajes if v.get("estado") == "llegado" and "retraso_final" in v]
@@ -179,6 +252,7 @@ def informe(registros):
     l.append("")
     l.append("El retraso de cada tren es el último que publica Renfe antes de llegar a la estación de destino.")
     l.append("")
+    l += seccion_mi_viaje(registros, terminados, en_ruta)
 
     if not terminados:
         l += ["Todavía no hay trenes terminados registrados. Vuelve en unas horas.", ""]
